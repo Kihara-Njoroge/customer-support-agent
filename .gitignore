@@ -41,3 +41,11 @@ yarn-error.log*
 next-env.d.ts
 .env*.local
 .env.local
+
+# Chroma vector DB (local / Docker volume)
+/data/chroma/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc

@@ -44,6 +44,155 @@ const SUGGESTIONS = [
     'API rate limits and error spikes—what to check first',
 ];
 
+type KbSource = { source: string; chunks: number };
+
+function KnowledgePanel({ getToken }: { getToken: () => Promise<string | null> }) {
+    const [sources, setSources] = useState<KbSource[]>([]);
+    const [kbLoading, setKbLoading] = useState(false);
+    const [kbError, setKbError] = useState('');
+    const [uploading, setUploading] = useState(false);
+    const fileRef = useRef<HTMLInputElement>(null);
+
+    const refreshSources = useCallback(async () => {
+        setKbLoading(true);
+        setKbError('');
+        try {
+            const jwt = await getToken();
+            if (!jwt) {
+                setKbError('Not signed in.');
+                return;
+            }
+            const res = await fetch('/api/knowledge/sources', {
+                headers: { Authorization: `Bearer ${jwt}` },
+            });
+            if (!res.ok) {
+                setKbError(`Could not list sources (${res.status}).`);
+                return;
+            }
+            const data = (await res.json()) as { sources: KbSource[] };
+            setSources(data.sources ?? []);
+        } catch {
+            setKbError('Network error loading knowledge base.');
+        } finally {
+            setKbLoading(false);
+        }
+    }, [getToken]);
+
+    useEffect(() => {
+        void refreshSources();
+    }, [refreshSources]);
+
+    async function onUploadFile(f: File) {
+        setKbError('');
+        setUploading(true);
+        try {
+            const jwt = await getToken();
+            if (!jwt) {
+                setKbError('Not signed in.');
+                return;
+            }
+            const fd = new FormData();
+            fd.append('file', f);
+            const res = await fetch('/api/knowledge/upload', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${jwt}` },
+                body: fd,
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                const detail = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail ?? res.statusText);
+                setKbError(detail || `Upload failed (${res.status}).`);
+                return;
+            }
+            await refreshSources();
+            if (fileRef.current) fileRef.current.value = '';
+        } catch {
+            setKbError('Upload failed.');
+        } finally {
+            setUploading(false);
+        }
+    }
+
+    async function removeSource(name: string) {
+        setKbError('');
+        try {
+            const jwt = await getToken();
+            if (!jwt) return;
+            const res = await fetch(`/api/knowledge/source?source=${encodeURIComponent(name)}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${jwt}` },
+            });
+            if (!res.ok) {
+                setKbError(`Remove failed (${res.status}).`);
+                return;
+            }
+            await refreshSources();
+        } catch {
+            setKbError('Remove failed.');
+        }
+    }
+
+    return (
+        <aside className="desk-kb-panel flex w-full shrink-0 flex-col border-b-2 border-[var(--desk-accent-border)] bg-[var(--desk-accent-soft)] lg:w-80 lg:border-b-0 lg:border-r-2">
+            <div className="border-b border-[var(--desk-accent-border)] px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-600">Knowledge base</p>
+                <p className="desk-body mt-1 text-xs leading-relaxed">
+                    Upload .txt, .md, or .pdf. A <strong>router</strong> agent decides when to query them; a{' '}
+                    <strong>KB analyst</strong> summarizes excerpts for the support reply (LangGraph orchestration).
+                </p>
+            </div>
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
+                <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".txt,.md,.pdf"
+                    className="sr-only"
+                    onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void onUploadFile(f);
+                    }}
+                />
+                <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => fileRef.current?.click()}
+                    className="chat-send-btn w-full py-2.5 text-sm"
+                >
+                    {uploading ? 'Uploading…' : 'Upload document'}
+                </button>
+                <button type="button" onClick={() => void refreshSources()} disabled={kbLoading} className="chat-btn-ghost text-xs">
+                    {kbLoading ? 'Refreshing…' : 'Refresh list'}
+                </button>
+                {kbError && (
+                    <p className="text-xs text-red-600" role="alert">
+                        {kbError}
+                    </p>
+                )}
+                <ul className="space-y-2 text-left text-sm">
+                    {sources.length === 0 && !kbLoading && (
+                        <li className="desk-body text-xs">No documents yet. Upload runbooks or FAQs your agents should cite.</li>
+                    )}
+                    {sources.map((s) => (
+                        <li key={s.source} className="desk-card flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+                            <span className="min-w-0 flex-1 truncate font-medium text-gray-900" title={s.source}>
+                                {s.source}
+                            </span>
+                            <span className="shrink-0 text-xs text-gray-500">{s.chunks} chunks</span>
+                            <button
+                                type="button"
+                                className="shrink-0 text-xs font-semibold text-red-600 hover:underline"
+                                onClick={() => void removeSource(s.source)}
+                            >
+                                Remove
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        </aside>
+    );
+}
+
 function ChatWorkspace() {
     const { getToken } = useAuth();
     const [messages, setMessages] = useState<Msg[]>([]);
@@ -103,7 +252,11 @@ function ChatWorkspace() {
                     onmessage(ev) {
                         if (ev.data === '[DONE]') return;
                         try {
-                            const parsed = JSON.parse(ev.data) as { delta?: string };
+                            const parsed = JSON.parse(ev.data) as { delta?: string; error?: string };
+                            if (parsed.error) {
+                                setError(parsed.error);
+                                return;
+                            }
                             if (parsed.delta) {
                                 assembled += parsed.delta;
                                 setMessages((prev) =>
@@ -148,7 +301,9 @@ function ChatWorkspace() {
     }
 
     return (
-        <div className="chat-app relative flex min-h-screen flex-col">
+        <div className="chat-app relative flex min-h-screen flex-col lg:flex-row">
+            <KnowledgePanel getToken={getToken} />
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="chat-aurora" aria-hidden="true" />
             <header className="chat-header relative z-10 flex items-center justify-between gap-4 px-4 py-3 md:px-8">
                 <div className="flex min-w-0 items-center gap-3">
@@ -263,6 +418,7 @@ function ChatWorkspace() {
                     </form>
                 </div>
             </main>
+            </div>
         </div>
     );
 }

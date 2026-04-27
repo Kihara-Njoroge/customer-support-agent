@@ -1,6 +1,15 @@
 fastapi
-uvicorn
+uvicorn[standard]
 openai
 fastapi-clerk-auth
 pydantic
 python-dotenv
+langchain>=0.3.20
+langchain-core
+langchain-openai
+langchain-text-splitters
+langgraph>=0.2.60
+langchain-chroma>=0.1.4
+chromadb>=0.5.15
+python-multipart
+pypdf>=5.0
